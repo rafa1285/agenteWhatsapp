@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agente-whatsapp-backend"
+version = "0.1.0"
+description = "Backend FastAPI del SaaS multi-tenant de recepción por IA para restaurantes (WhatsApp + teléfono)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Web / API
+    "fastapi",
+    "uvicorn[standard]>=0.30",
+    # Parseo de form-urlencoded (webhook de Twilio usa `request.form()`)
+    "python-multipart",
+    # Base de datos
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg",
+    "alembic",
+    # Validación / configuración
+    "pydantic>=2",
+    "pydantic-settings",
+    # Caché / estado de conversación (cliente con soporte asyncio)
+    "redis>=5",
+    # Worker programado de recordatorios (Celery + Redis beat). Incluye el
+    # cliente redis de Celery (broker/result backend).
+    "celery[redis]",
+    # LLM
+    "anthropic",
+    # Cliente HTTP (webhooks, llamadas salientes)
+    "httpx",
+    # Variables de entorno
+    "python-dotenv",
+    # Base de datos de zonas horarias (Windows no trae tzdata; lo necesita zoneinfo)
+    "tzdata",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle: errores
+    "W",     # pycodestyle: warnings
+    "F",     # pyflakes: imports sin usar, nombres indefinidos, etc.
+    "I",     # isort: orden de imports
+    "N",     # pep8-naming: convención de nombres
+    "UP",    # pyupgrade: sintaxis moderna
+    "B",     # flake8-bugbear: bugs comunes
+    "C4",    # flake8-comprehensions
+    "SIM",   # flake8-simplify: simplificaciones
+    "ASYNC", # flake8-async: reglas de async (FastAPI)
+    "RUF",   # reglas propias de ruff
+]
+ignore = [
+    "B008",  # FastAPI: Depends()/Query() como argumentos por defecto es intencional
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

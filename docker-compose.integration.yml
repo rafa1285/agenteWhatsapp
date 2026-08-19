@@ -1,0 +1,113 @@
+# Docker Compose para integración E2E (backend + panel + DB + Redis)
+# Uso: docker compose -f docker-compose.integration.yml up -d
+# Tests E2E: cd agenteWhatsappPanel && npx playwright test
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agente_whatsapp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./agenteWhatsapp
+      dockerfile: Dockerfile
+    environment:
+      ENV: development
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/agente_whatsapp
+      REDIS_URL: redis://redis:6379/0
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      WHATSAPP_WEBHOOK_VERIFY_TOKEN: ${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-test_token}
+      WHATSAPP_API_URL: https://waba.360dialog.io/v1/messages
+      WHATSAPP_API_TOKEN: ${WHATSAPP_API_TOKEN:-}
+      VOICE_BASE_URL: http://localhost
+      JWT_PUBLIC_KEY_PATH: /app/storage/keys/public.pem
+      JWT_ISSUER: reception-panel
+      JWT_AUDIENCE: reception-api
+      JWT_ALGORITHM: RS256
+      # Webhook callbacks to panel
+      PANEL_WEBHOOK_URL: http://panel/api/webhook/backend
+      PANEL_WEBHOOK_SECRET: ${BACKEND_WEBHOOK_SECRET:-dev_secret_change_in_prod}
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./agenteWhatsapp/storage/keys:/app/storage/keys:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  panel:
+    build:
+      context: ./agenteWhatsappPanel
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${APP_KEY:-}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: agente_whatsapp
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PASSWORD: null
+      REDIS_PORT: 6379
+      SESSION_DRIVER: redis
+      CACHE_STORE: redis
+      QUEUE_CONNECTION: redis
+      BACKEND_API_URL: http://backend:8000
+      JWT_PRIVATE_KEY_PATH: /var/www/html/storage/keys/private.pem
+      JWT_ISSUER: reception-panel
+      JWT_AUDIENCE: reception-api
+      JWT_TTL: 3600
+      BACKEND_WEBHOOK_SECRET: ${BACKEND_WEBHOOK_SECRET:-dev_secret_change_in_prod}
+    ports:
+      - "8002:80"
+    volumes:
+      - ./agenteWhatsappPanel/storage/keys:/var/www/html/storage/keys:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/up"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  postgres_data:

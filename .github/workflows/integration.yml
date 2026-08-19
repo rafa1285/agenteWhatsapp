@@ -1,0 +1,100 @@
+name: Integration Tests (E2E)
+
+# Levanta el stack completo (backend FastAPI + panel Laravel + Postgres + Redis)
+# y ejecuta la suite Playwright E2E del panel contra el backend real.
+# Los dos repositorios se clonan como siblings (agenteWhatsapp / agenteWhatsappPanel)
+# para que docker-compose.integration.yml resuelva los contextos relativos.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      BACKEND_WEBHOOK_SECRET: integration_secret_change_in_prod
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+
+    steps:
+      - name: Checkout backend (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: agenteWhatsapp
+
+      - name: Checkout panel
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/agenteWhatsappPanel
+          path: agenteWhatsappPanel
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create key directories from committed keys
+        run: |
+          mkdir -p agenteWhatsapp/storage/keys agenteWhatsappPanel/storage/keys
+          # Las claves de dev ya vienen versionadas en storage/keys/*.pem
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare panel env for Docker
+        run: |
+          cp agenteWhatsappPanel/.env.example agenteWhatsappPanel/.env
+          echo "APP_KEY=$APP_KEY" >> agenteWhatsappPanel/.env
+          echo "BACKEND_WEBHOOK_SECRET=$BACKEND_WEBHOOK_SECRET" >> agenteWhatsappPanel/.env
+
+      - name: Start integration stack
+        run: |
+          docker compose -f agenteWhatsapp/docker-compose.integration.yml up -d --build
+          echo "Waiting for services to be healthy..."
+          for i in $(seq 1 30); do
+            if docker compose -f agenteWhatsapp/docker-compose.integration.yml ps | grep -q "healthy"; then
+              echo "Services are healthy"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Run backend migrations
+        run: |
+          docker compose -f agenteWhatsapp/docker-compose.integration.yml exec -T backend alembic upgrade head
+
+      - name: Run panel migrations + seeders
+        run: |
+          docker compose -f agenteWhatsapp/docker-compose.integration.yml exec -T panel php artisan migrate --force --seed
+
+      - name: Install Playwright
+        run: |
+          cd agenteWhatsappPanel
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests
+        run: |
+          cd agenteWhatsappPanel
+          npx playwright test --reporter=line
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:8002
+
+      - name: Collect artifacts on failure
+        if: failure()
+        run: |
+          docker compose -f agenteWhatsapp/docker-compose.integration.yml logs > integration-logs.txt || true
+          docker compose -f agenteWhatsapp/docker-compose.integration.yml ps > integration-ps.txt || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: |
+            integration-logs.txt
+            integration-ps.txt
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose -f agenteWhatsapp/docker-compose.integration.yml down -v || true
