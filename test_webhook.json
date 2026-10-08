@@ -1,0 +1,21 @@
+{
+    "object": "whatsapp_business_account",
+    "entry": [{
+      "id": "123456789",
+      "changes": [{
+        "field": "messages",
+        "value": {
+          "metadata": {
+            "phone_number_id": "1080327585164011",
+            "display_phone_number": "34 600 000 000"
+          },
+          "messages": [{
+            "id": "wamid.test-1234567890",
+            "from": "34611223344",
+            "type": "text",
+            "text": { "body": "Hola, quiero reservar para 2 personas mañana a las 14:00" }
+          }]
+        }
+      }]
+    }]
+  }

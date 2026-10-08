@@ -8,6 +8,7 @@ arranque (los clientes LLM/WhatsApp son perezosos).
 
 from fastapi import FastAPI
 
+from app.agent.router import router as agent_router
 from app.channels.voice.router import router as voice_router
 from app.channels.whatsapp.router import router as whatsapp_router
 
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(customers_router)
     app.include_router(reminders_router)
     app.include_router(faqs_router)
+    app.include_router(agent_router)
 
     return app
 

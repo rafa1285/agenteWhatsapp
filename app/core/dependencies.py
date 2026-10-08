@@ -70,10 +70,12 @@ async def get_current_restaurant(
 async def get_llm_client() -> LLMClient:
     """Cliente LLM (inyectable, overrideable en tests)."""
     from app.agent.client import ClaudeClient
+
     return ClaudeClient()
 
 
 async def get_whatsapp_gateway() -> WhatsAppGateway:
     """Gateway WhatsApp (inyectable, overrideable en tests)."""
-    from app.channels.whatsapp.gateway import Dialog360Client
-    return Dialog360Client()
+    from app.channels.whatsapp.gateway import MetaWhatsAppClient
+
+    return MetaWhatsAppClient()

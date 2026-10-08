@@ -16,6 +16,7 @@ from app.agent.service import (
     transcript_from_json,
     transcript_to_json,
 )
+from sqlalchemy import text
 
 
 def test_transcript_round_trip() -> None:
@@ -84,6 +85,30 @@ async def test_create_escalation_linked_to_conversation(
     assert escalation.conversation_id == conversation.id
     assert escalation.reason == EscalationReason.COMPLAINT
     assert escalation.status.value == "pending"
+    assert escalation.date is not None
+
+
+async def test_create_escalation_falls_back_when_db_default_is_missing(
+    db_session, restaurant_factory, customer_factory
+):
+    restaurant = await restaurant_factory()
+    customer = await customer_factory(restaurant.id)
+    conversation = await create_conversation(
+        db_session,
+        restaurant_id=restaurant.id,
+        customer_id=customer.id,
+        channel=ConversationChannel.WHATSAPP,
+    )
+    await db_session.execute(text("ALTER TABLE escalations ALTER COLUMN date DROP DEFAULT"))
+
+    escalation = await create_escalation(
+        db_session,
+        restaurant_id=restaurant.id,
+        conversation_id=conversation.id,
+        reason=EscalationReason.COMPLAINT,
+    )
+
+    assert escalation.date is not None
 
 
 async def test_latest_conversation_transcript_returns_most_recent(

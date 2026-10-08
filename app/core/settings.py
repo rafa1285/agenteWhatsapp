@@ -28,11 +28,12 @@ class Settings(BaseSettings):
     AGENT_MAX_TOKENS: int = 1024
     AGENT_TEMPERATURE: float = 0.3
 
-    # Canal WhatsApp (360dialog). El token es secreto y se define en `.env`;
+    # Canal WhatsApp (Meta Cloud API o 360dialog). El token es secreto y se define en `.env`;
     # el verify token protege el handshake del webhook (producción lo fija).
     WHATSAPP_WEBHOOK_VERIFY_TOKEN: str = "cambia-me"
-    WHATSAPP_API_URL: str = "https://waba.360dialog.io/v1/messages"
+    WHATSAPP_API_URL: str = "https://graph.facebook.com/v19.0"
     WHATSAPP_API_TOKEN: str | None = None
+    WHATSAPP_PHONE_NUMBER_ID: str | None = None
     WHATSAPP_API_TIMEOUT: float = 10.0
 
     # Canal de voz (webhook Twilio, TwiML sin SDK). `VOICE_BASE_URL` es la base

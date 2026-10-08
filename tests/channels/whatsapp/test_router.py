@@ -10,8 +10,9 @@ sesión distinta) pueda ver.
 from datetime import date as date_type
 
 from app.agent.client import LLMResponse, ToolCall
-from app.agent.models import Conversation
-from app.agent.orchestrator import FALLBACK_TEXT
+from app.agent.models import Conversation, Escalation, EscalationReason
+from app.agent.orchestrator import FALLBACK_TEXT, TECHNICAL_FAILURE_TEXT
+from app.core.settings import settings
 from app.modules.customers.models import Customer
 from app.modules.reservations.models import Reservation
 from sqlalchemy import func, select
@@ -53,7 +54,7 @@ async def test_verify_valid_token_returns_challenge(asgi_client) -> None:
         "/api/whatsapp/webhook",
         params={
             "hub.mode": "subscribe",
-            "hub.verify_token": "cambia-me",
+            "hub.verify_token": settings.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
             "hub.challenge": "123456",
         },
     )
@@ -170,3 +171,58 @@ async def test_unknown_number_is_ignored(asgi_client, db_session, restaurant_fac
     assert response.json() == {"status": "ok"}
     assert gateway.sent == []
     assert llm.calls == []
+
+
+class _RaisingClient:
+    async def generate(self, **kwargs):
+        raise RuntimeError("llm down")
+
+
+async def test_e2e_technical_failure_creates_escalation(
+    test_engine, db_session, restaurant_factory
+) -> None:
+    restaurant = await restaurant_factory(active=True, whatsapp_number_id="wa-100000")
+    await db_session.commit()
+    restaurant_id = restaurant.id
+
+    from app.channels.whatsapp.dependencies import get_llm_client, get_whatsapp_gateway
+    from app.channels.whatsapp.gateway import FakeWhatsAppGateway
+    from app.db.session import get_db_session
+    from app.main import create_app
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    session_factory = async_sessionmaker(
+        bind=test_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
+    async def _db_session():
+        async with session_factory() as session:
+            yield session
+
+    app = create_app()
+    gateway = FakeWhatsAppGateway()
+    app.dependency_overrides[get_db_session] = _db_session
+    app.dependency_overrides[get_llm_client] = lambda: _RaisingClient()
+    app.dependency_overrides[get_whatsapp_gateway] = lambda: gateway
+
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/whatsapp/webhook",
+                json=_payload(messages=[_text_message(mid="wamid.tech", body="Hola")]),
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert gateway.sent == [{"to": "+34611111111", "text": TECHNICAL_FAILURE_TEXT}]
+
+    escalation = await db_session.scalar(
+        select(Escalation).where(Escalation.restaurant_id == restaurant_id)
+    )
+    assert escalation is not None
+    assert escalation.reason == EscalationReason.TECHNICAL_FAILURE
+    assert escalation.date is not None

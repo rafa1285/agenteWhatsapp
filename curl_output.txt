@@ -1,0 +1,31 @@
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   667  100    21  100   646     22    696 --:--:-- --:--:-- --:--:--   720100   667  100    21  100   646     22    696 --:--:-- --:--:-- --:--:--   720HTTP/2 500 
+date: Sun, 27 Sep 2026 12:47:44 GMT
+content-type: text/plain; charset=utf-8
+content-length: 21
+cf-ray: a41a9e5c5f699a49-BCN
+cf-cache-status: DYNAMIC
+server: cloudflare
+x-robots-tag: none
+x-robots-tag: none
+
+Internal Server Error
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   667  100    21  100   646     35   1082 --:--:-- --:--:-- --:--:--  1119HTTP/1.1 500 Internal Server Error
+date: Sun, 27 Sep 2026 12:55:52 GMT
+server: uvicorn
+content-length: 21
+content-type: text/plain; charset=utf-8
+
+Internal Server Error
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0 96   667    0     0  100   646      0   1025 --:--:-- --:--:-- --:--:--  1025100   667  100    21  100   646     33   1025 --:--:-- --:--:-- --:--:--  1058HTTP/1.1 500 Internal Server Error
+date: Sun, 27 Sep 2026 13:11:44 GMT
+server: uvicorn
+content-length: 21
+content-type: text/plain; charset=utf-8
+
+Internal Server Error

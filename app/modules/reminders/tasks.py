@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.celery import celery_app
-from app.channels.whatsapp.gateway import Dialog360Client
+from app.channels.whatsapp.gateway import MetaWhatsAppClient
 from app.core.settings import settings
 from app.modules.reminders.service import process_due_reminders
 
@@ -26,7 +26,7 @@ async def _process_due() -> int:
     try:
         async with session_factory() as session:
             return await process_due_reminders(
-                session, gateway=Dialog360Client(), now=datetime.now(UTC)
+                session, gateway=MetaWhatsAppClient(), now=datetime.now(UTC)
             )
     finally:
         await engine.dispose()

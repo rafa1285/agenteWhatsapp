@@ -8,7 +8,7 @@ hacen `flush` (nunca `commit`): el límite de la transacción lo decide el calle
 
 import json
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,9 @@ async def create_conversation(
         customer_id=customer_id,
         channel=channel,
         transcript=transcript,
+        # date se fija en app: la BD local puede no tener server_default
+        # (drift de esquema) y NOT NULL lo rechazaría con IntegrityError.
+        date=datetime.now(UTC),
     )
     session.add(conversation)
     await session.flush()
@@ -87,6 +90,9 @@ async def create_escalation(
         restaurant_id=restaurant_id,
         conversation_id=conversation_id,
         reason=reason,
+        # date se fija en app: la BD local puede no tener server_default
+        # (drift de esquema) y NOT NULL lo rechazaría con IntegrityError.
+        date=datetime.now(UTC),
     )
     session.add(escalation)
     await session.flush()
