@@ -5,10 +5,15 @@ por HTTP, el router resuelve tenant/cliente, el orquestador corre y la respuesta
 sale como TwiML XML. Usa `asgi_client` (app real con dependencias overrideadas).
 """
 
+import base64
+import hashlib
+import hmac
 from datetime import date as date_type
 
 from app.agent.client import LLMResponse, ToolCall
+from app.channels.voice.handler import COURTESY_TEXT
 from app.channels.voice.models import VoiceCall, VoiceCallStatus
+from app.core.settings import settings
 from app.modules.reservations.models import Reservation
 from sqlalchemy import func, select
 
@@ -31,6 +36,13 @@ def _form(*, call_sid="CA0001", speech_result=None, **overrides: str) -> dict[st
         fields.setdefault("Confidence", "0.9")
     fields.update(overrides)
     return fields
+
+
+def _sign_form(*, token: str, path: str, form: dict[str, str]) -> str:
+    url = f"{settings.VOICE_BASE_URL.rstrip('/')}{path}"
+    payload = "".join(f"{key}{value}" for key, value in sorted(form.items()))
+    digest = hmac.new(token.encode("utf-8"), f"{url}{payload}".encode(), hashlib.sha1).digest()
+    return base64.b64encode(digest).decode("ascii")
 
 
 async def test_initial_call_returns_greeting_twiml(asgi_client, db_session, restaurant_factory):
@@ -139,6 +151,83 @@ async def test_status_non_terminal_is_noop(asgi_client, db_session, restaurant_f
         "/api/voice/status", data=_form(CallStatus="ringing", RecordingUrl="https://r")
     )
 
+    row = await db_session.scalar(select(VoiceCall).where(VoiceCall.restaurant_id == restaurant_id))
+    assert row.status == VoiceCallStatus.IN_PROGRESS
+    assert row.recording_url is None
+
+
+async def test_invalid_signature_returns_courtesy_without_creating_call(
+    asgi_client, db_session, restaurant_factory, monkeypatch
+):
+    await restaurant_factory(active=True, voice_number="+34910000001")
+    await db_session.commit()
+    client, llm, gateway = asgi_client
+    monkeypatch.setattr(settings, "TESTING", False)
+    monkeypatch.setattr(settings, "TWILIO_VALIDATE_SIGNATURE", True)
+    monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", "secret")
+
+    response = await client.post(
+        "/api/voice/call",
+        data=_form(),
+        headers={"X-Twilio-Signature": "firma-invalida"},
+    )
+
+    assert response.status_code == 200
+    assert COURTESY_TEXT in response.text
+    assert llm.calls == []
+    assert gateway.sent == []
+    assert await _count(db_session, VoiceCall) == 0
+
+
+async def test_valid_signature_processes_call(
+    asgi_client, db_session, restaurant_factory, monkeypatch
+):
+    restaurant = await restaurant_factory(active=True, voice_number="+34910000001", name="Er Pichi")
+    restaurant_id = restaurant.id
+    await db_session.commit()
+    client, llm, gateway = asgi_client
+    monkeypatch.setattr(settings, "TESTING", False)
+    monkeypatch.setattr(settings, "TWILIO_VALIDATE_SIGNATURE", True)
+    monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", "secret")
+    monkeypatch.setattr(settings, "VOICE_BASE_URL", "https://example.com")
+
+    form = _form()
+    signature = _sign_form(token="secret", path="/api/voice/call", form=form)
+    response = await client.post(
+        "/api/voice/call",
+        data=form,
+        headers={"X-Twilio-Signature": signature},
+    )
+
+    assert response.status_code == 200
+    assert "Bienvenido a Er Pichi" in response.text
+    assert llm.calls == []
+    assert gateway.sent == []
+    row = await db_session.scalar(select(VoiceCall).where(VoiceCall.restaurant_id == restaurant_id))
+    assert row is not None
+    assert row.status == VoiceCallStatus.IN_PROGRESS
+
+
+async def test_invalid_status_signature_is_noop(
+    asgi_client, db_session, restaurant_factory, monkeypatch
+):
+    restaurant = await restaurant_factory(active=True, voice_number="+34910000001")
+    restaurant_id = restaurant.id
+    await db_session.commit()
+    client, _llm, _gateway = asgi_client
+
+    await client.post("/api/voice/call", data=_form())
+    monkeypatch.setattr(settings, "TESTING", False)
+    monkeypatch.setattr(settings, "TWILIO_VALIDATE_SIGNATURE", True)
+    monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", "secret")
+
+    response = await client.post(
+        "/api/voice/status",
+        data=_form(CallStatus="completed", RecordingUrl="https://api.twilio.com/rec"),
+        headers={"X-Twilio-Signature": "firma-invalida"},
+    )
+
+    assert response.status_code == 200
     row = await db_session.scalar(select(VoiceCall).where(VoiceCall.restaurant_id == restaurant_id))
     assert row.status == VoiceCallStatus.IN_PROGRESS
     assert row.recording_url is None

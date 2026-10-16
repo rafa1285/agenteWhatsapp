@@ -22,3 +22,23 @@ def test_anthropic_override_via_env(monkeypatch) -> None:
     assert s.AGENT_MODEL == "claude-haiku-4-5"
     assert s.AGENT_MAX_TOKENS == 2048
     assert s.AGENT_TEMPERATURE == 0.5
+
+
+def test_twilio_defaults() -> None:
+    s = Settings(_env_file=None)
+    assert s.TWILIO_ACCOUNT_SID is None
+    assert s.TWILIO_AUTH_TOKEN is None
+    assert s.TWILIO_VALIDATE_SIGNATURE is True
+    assert s.VOICE_BASE_URL == "https://example.com"
+
+
+def test_twilio_override_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACtest")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token-test")
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURE", "false")
+    monkeypatch.setenv("VOICE_BASE_URL", "https://voice.example.com")
+    s = Settings()
+    assert s.TWILIO_ACCOUNT_SID == "ACtest"
+    assert s.TWILIO_AUTH_TOKEN == "token-test"
+    assert s.TWILIO_VALIDATE_SIGNATURE is False
+    assert s.VOICE_BASE_URL == "https://voice.example.com"

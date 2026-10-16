@@ -143,18 +143,18 @@ async def process_voice_call(
     """
     if not request.call_sid:
         logger.info("webhook de voz sin CallSid: cortesía")
-        return _courtesy()
+        return build_response(say(f"Debug: falta CallSid. Recibido: {request.call_sid}"), hangup())
 
     if request.dial_call_status:
         return await _handle_dial_completion(session, request=request)
 
     if not request.to:
         logger.info("webhook de voz sin número destino: cortesía")
-        return _courtesy()
+        return build_response(say(f"Debug: falta To. Recibido: {request.to}"), hangup())
     restaurant = await get_restaurant_by_voice_number(session, voice_number=request.to)
     if restaurant is None:
         logger.info("llamada a número desconocido/inactivo (%s): cortesía", request.to)
-        return _courtesy()
+        return build_response(say(f"Debug: Restaurante no encontrado para {request.to}"), hangup())
     # Capturado antes de cualquier rollback por carrera (expiraría el objeto y
     # acceder a sus atributos haría un lazy-load síncrono -> MissingGreenlet).
     restaurant_id = restaurant.id

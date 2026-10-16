@@ -60,9 +60,9 @@ Correspondencia de las tablas de la sección 7 del spec con el código:
 | Base de datos | PostgreSQL (SQLAlchemy) |
 | Caché / estado de conversación | Redis |
 | LLM | Claude Haiku 4.5 vía tool-calling |
-| WhatsApp | WhatsApp Business API vía 360dialog (webhook) |
-| Voz | Twilio (telefonía / desvío de llamadas) + ElevenLabs (STT/TTS) |
-| Recordatorios | Worker programado (por decidir: APScheduler / Celery) |
+| WhatsApp | WhatsApp Business API (Meta Cloud API / 360dialog) |
+| Voz | Twilio (TwiML / desvío de llamadas) |
+| Recordatorios | Worker programado (Celery + Redis Beat) |
 
 ## Convenciones
 
@@ -104,14 +104,17 @@ Correspondencia de las tablas de la sección 7 del spec con el código:
 
 ## Estado / roadmap
 
-Fase actual: scaffolding (estructura + documentación). Siguientes pasos según el
-roadmap del spec:
+Fase actual: Implementación avanzada del backend. La arquitectura de monolito modular está completa, con todos los módulos de dominio implementados y el orquestador del agente funcional.
 
-1. Modelos SQLAlchemy (tablas de la sección 7)
-2. Motor de reservas (servicios puros)
-3. Cliente LLM (Claude Haiku 4.5)
-4. Tools para tool-calling
-5. Orquestador de conversación
-6. Webhook de WhatsApp (360dialog)
-7. Canal de voz (Twilio + ElevenLabs)
-8. Worker de recordatorios
+Progreso real:
+1. Modelos SQLAlchemy: Implementados (8 tablas base + `voice_calls` y `webhook_messages`).
+2. Motor de reservas: Implementado (servicios puros en `app/modules/reservations/service.py`).
+3. Cliente LLM: Implementado (Claude Haiku 4.5 vía tool-calling).
+4. Tools para tool-calling: Implementadas en cada módulo.
+5. Orquestador de conversación: Implementado (`app/agent/orchestrator.py`).
+6. Webhook de WhatsApp: Implementado (compatible con Meta Cloud API y 360dialog).
+7. Canal de voz: Implementado (Twilio TwiML + STT/TTS).
+8. Worker de recordatorios: Implementado (Celery + Redis Beat).
+9. Auth JWT: Implementado (RS256 panel → backend).
+10. Tests: Cobertura amplia en unitarios, servicios y canales.
+

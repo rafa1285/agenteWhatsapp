@@ -36,6 +36,15 @@ class LLMResponse:
     stop_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class LLMStreamResponse:
+    """Respuesta en streaming del LLM."""
+
+    text: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    stop_reason: str | None = None
+
+
 class LLMClient(Protocol):
     """Contrato de la capa de modelo (intercambiable, §19)."""
 
@@ -48,6 +57,16 @@ class LLMClient(Protocol):
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> LLMResponse: ...
+
+    async def generate_stream(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> AsyncGenerator[LLMStreamResponse, None]: ...
 
 
 class ClaudeClient:
@@ -93,6 +112,37 @@ class ClaudeClient:
             kwargs["tools"] = tools
         message = await self._client.messages.create(**kwargs)
         return _parse_message(message)
+
+    async def generate_stream(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> AsyncGenerator[LLMStreamResponse, None]:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens if max_tokens is not None else settings.AGENT_MAX_TOKENS,
+            "temperature": (temperature if temperature is not None else settings.AGENT_TEMPERATURE),
+            "system": system,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        async with self._client.messages.stream(**kwargs) as stream:
+            for event in stream:
+                if event.type == "message_start":
+                    yield LLMStreamResponse()
+                elif event.type == "content_block_delta":
+                    if event.delta.type == "text_delta":
+                        yield LLMStreamResponse(text=event.delta.text)
+                    elif event.delta.type == "tool_use_block_delta":
+                        yield LLMStreamResponse(tool_calls=())
+                elif event.type == "message_stop":
+                    yield LLMStreamResponse(stop_reason=event.stop_reason)
 
 
 def _parse_message(message: Any) -> LLMResponse:

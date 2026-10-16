@@ -14,8 +14,8 @@ agente autónomo que atiende reservas y consultas frecuentes por **WhatsApp** y
 - **PostgreSQL** — base de datos principal (multi-tenant)
 - **Redis** — caché / estado de conversaciones activas
 - **Claude Haiku 4.5** — LLM del agente, vía tool-calling
-- **360dialog** — WhatsApp Business API
-- **Twilio + ElevenLabs** — canal de voz (desvío de llamadas + STT/TTS)
+- **360dialog / Meta Cloud API** — WhatsApp Business API
+- **Twilio** — canal de voz (desvío de llamadas + STT/TTS via TwiML)
 
 ## Qué NO incluye este repositorio
 
@@ -26,10 +26,15 @@ agente autónomo que atiende reservas y consultas frecuentes por **WhatsApp** y
 
 ## Estado
 
-Modelos de la sección 7 del spec creados (8 tablas: `restaurants`, `tables`,
-`shifts`, `customers`, `reservations`, `reminders`, `conversations`,
-`escalations`) y primera migración Alembic aplicada sobre PostgreSQL 14
-(Laragon). Siguiente paso: motor de reservas (servicios puros).
+Backend implementado y funcional. Incluye:
+- Modelos de la sección 7 del spec + extensiones para voz y webhooks.
+- Motor de reservas, disponibilidad y gestión de clientes.
+- Orquestador de agente LLM (Claude Haiku 4.5) con tool-calling.
+- Integración de WhatsApp (Meta Cloud API / 360dialog) y Voz (Twilio).
+- Worker de recordatorios programados con Celery + Redis.
+- Autenticación JWT RS256 para comunicación con el panel.
+- Suite de tests completa (unidades, servicios y canales).
+Siguiente paso: Pruebas de integración E2E con el panel y despliegue piloto.
 
 ## Puesta en marcha (Windows + Laragon)
 

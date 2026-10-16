@@ -85,3 +85,12 @@ def build_response(*children: Node) -> str:
     """Envuelve los nodos en el `<Response>` raíz con la declaration XML."""
     inner = "".join(child.render() for child in children)
     return f'<?xml version="1.0" encoding="UTF-8"?><Response>{inner}</Response>'
+
+
+def connect_stream(stream_url: str) -> Node:
+    """`<Connect><Stream url="..."></Stream></Connect>`: inicia un flujo de medios con Twilio.
+
+    El `stream_url` es la URL pública del WebSocket de FastAPI que manejará
+    el flujo de audio bidireccional.
+    """
+    return Node("Connect", children=[Node("Stream", attrs={"url": stream_url})])

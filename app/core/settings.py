@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # pública de los webhooks (túnel local / dominio): Twilio exige URLs
     # absolutas en los `action` de Gather/Dial. No es secreto; se fija en `.env`.
     VOICE_BASE_URL: str = "https://example.com"
+    # Credenciales y validación del webhook Twilio. `TWILIO_AUTH_TOKEN` debe
+    # configurarse en `.env` para validar `X-Twilio-Signature`; si está vacío,
+    # el backend no valida la firma. La validación también puede desactivarse
+    # en tests o entornos controlados con `TWILIO_VALIDATE_SIGNATURE=false`.
+    TWILIO_ACCOUNT_SID: str | None = None
+    TWILIO_AUTH_TOKEN: str | None = None
+    TWILIO_VALIDATE_SIGNATURE: bool = True
     VOICE_STT_CONFIDENCE_THRESHOLD: float = 0.5
     VOICE_SILENCE_REPROMPT_SECONDS: int = 4
     VOICE_SILENCE_HANGUP_SECONDS: int = 8
@@ -65,6 +72,26 @@ class Settings(BaseSettings):
     # En dev puede estar vacío (polling). En prod se fija la URL del panel + secreto HMAC.
     PANEL_WEBHOOK_URL: str = ""
     PANEL_WEBHOOK_SECRET: str = ""
+
+    # Knowledge Base (Qdrant + Embeddings).
+    # QDRANT_URL suele ser http://localhost:6333 en dev.
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str | None = None
+    # Usamos OpenAI para embeddings por defecto (text-embedding-3-small).
+    OPENAI_API_KEY: str | None = None
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # Deepgram (STT en tiempo real).
+    DEEPGRAM_API_KEY: str | None = None
+
+    # ElevenLabs (TTS en tiempo real).
+    ELEVENLABS_API_KEY: str | None = None
+
+    # Voice streaming configuration
+    USE_MEDIA_STREAMS: bool = (
+        False  # Set to True to enable Twilio Media Streams + Deepgram/ElevenLabs
+    )
+    MEDIA_STREAMS_URL: str = "wss://example.com/api/voice/stream"  # WebSocket URL for media streams
 
     # Testing flag para deshabilitar webhooks y otras integraciones externas en tests
     TESTING: bool = False
