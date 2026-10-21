@@ -3,6 +3,7 @@ Maneja la indexación y búsqueda de FAQs multi-tenant.
 """
 
 import logging
+import uuid
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.models import (
@@ -21,11 +22,25 @@ logger = logging.getLogger(__name__)
 
 class VectorStoreService:
     def __init__(self):
-        self.client = AsyncQdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY,
-        )
         self.collection_name = "restaurant_faqs"
+        self._client: AsyncQdrantClient | None = None
+
+    @property
+    def client(self) -> AsyncQdrantClient:
+        # Perezoso: en modo embebido abrir el cliente bloquea `QDRANT_PATH`, así
+        # que no debe crearse al importar la app (tests y otros procesos no usan
+        # la base de conocimientos).
+        if self._client is None:
+            if settings.QDRANT_PATH:
+                # Modo embebido (desarrollo): ficheros locales, sin Docker, y un
+                # único proceso a la vez.
+                self._client = AsyncQdrantClient(path=settings.QDRANT_PATH)
+            else:
+                self._client = AsyncQdrantClient(
+                    url=settings.QDRANT_URL,
+                    api_key=settings.QDRANT_API_KEY or None,
+                )
+        return self._client
 
     async def ensure_collection(self):
         """Crea la colección de FAQs si no existe."""
@@ -36,8 +51,8 @@ class VectorStoreService:
                 await self.client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
-                        size=1536, distance=Distance.COSINE
-                    ),  # Tamaño para text-embedding-3-small
+                        size=settings.EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
                 )
         except Exception as e:
             logger.error("Error asegurando colección de Qdrant: %s", e, exc_info=True)
@@ -45,11 +60,12 @@ class VectorStoreService:
 
     async def upsert_faq(self, restaurant_id: str, question: str, answer: str, vector: list[float]):
         """Inserta o actualiza una FAQ en la base de datos vectorial."""
-        # Usamos el hash de la pregunta como ID para evitar duplicados del mismo restaurante
-        import hashlib
+        # Qdrant solo acepta UUID o enteros como id; UUIDv5 es determinista, asi que
+        # reindexar la misma pregunta del mismo restaurante actualiza el punto en vez
+        # de duplicarlo.
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{restaurant_id}:{question}"))
 
-        point_id = hashlib.sha256(f"{restaurant_id}:{question}".encode()).hexdigest()
-
+        await self.ensure_collection()
         await self.client.upsert(
             collection_name=self.collection_name,
             points=[
@@ -69,9 +85,9 @@ class VectorStoreService:
         self, restaurant_id: str, query_vector: list[float], limit: int = 3
     ) -> list[dict]:
         """Busca las FAQs más relevantes para un restaurante específico."""
-        search_result = await self.client.search(
+        search_result = await self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=Filter(
                 must=[
                     FieldCondition(
@@ -90,7 +106,7 @@ class VectorStoreService:
                 "answer": hit.payload["answer"],
                 "score": hit.score,
             }
-            for hit in search_result
+            for hit in search_result.points
         ]
 
     async def delete_restaurant_faqs(self, restaurant_id: str):

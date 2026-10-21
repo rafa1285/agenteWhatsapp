@@ -22,10 +22,12 @@ from app.channels.voice.handler import (
     TRANSFER_FAILED_TEXT,
     process_voice_call,
     process_voice_status,
+    resolve_media_stream_call,
 )
 from app.channels.voice.models import VoiceCall, VoiceCallStatus
 from app.channels.voice.schemas import TwilioCallRequest
 from app.channels.whatsapp.gateway import FakeWhatsAppGateway
+from app.core.settings import settings
 from app.modules.customers.models import Customer
 from app.modules.reservations.models import Reservation, SourceChannel
 from sqlalchemy import func, select
@@ -128,6 +130,64 @@ async def test_initial_call_creates_greeting_with_rgpd_notice(db_session, restau
     assert row is not None
     assert row.status == VoiceCallStatus.IN_PROGRESS
     assert row.silence_count == 0
+
+
+async def test_media_streams_mode_opens_a_connect_stream(
+    db_session, restaurant_factory, monkeypatch
+):
+    monkeypatch.setattr(settings, "USE_MEDIA_STREAMS", True)
+    monkeypatch.setattr(settings, "VOICE_BASE_URL", "https://tunel.example")
+    await restaurant_factory(active=True, voice_number=VOICE_NUMBER, name="Er Pichi")
+    llm = FakeLLMClient()
+    gateway = FakeWhatsAppGateway()
+
+    twiml = await process_voice_call(db_session, request=_call(), llm=llm, gateway=gateway)
+
+    # El stream se deriva de VOICE_BASE_URL (https -> wss) y lleva el CallSid: es
+    # la única identidad que el WebSocket necesita para resolver la llamada.
+    assert '<Stream url="wss://tunel.example/api/voice/stream?CallSid=CA0001"/>' in twiml
+    assert "<Connect>" in twiml
+    # Respaldo: si el WebSocket cae, Twilio ejecuta el <Say> posterior al <Connect>.
+    assert "Se ha cortado la línea" in twiml
+    assert "Bienvenido a Er Pichi" not in twiml  # el saludo lo pone ElevenLabs
+    # La fila ya está commiteada: el stream la encuentra por CallSid.
+    assert await _call_row(db_session) is not None
+
+
+async def test_media_stream_url_derives_ws_and_escapes_the_call_sid(
+    db_session, restaurant_factory, monkeypatch
+):
+    monkeypatch.setattr(settings, "USE_MEDIA_STREAMS", True)
+    monkeypatch.setattr(settings, "VOICE_BASE_URL", "http://local.dev:8000")
+    await restaurant_factory(active=True, voice_number=VOICE_NUMBER)
+
+    twiml = await process_voice_call(
+        db_session,
+        request=_call(CallSid="CA+1/2"),
+        llm=FakeLLMClient(),
+        gateway=FakeWhatsAppGateway(),
+    )
+
+    # http -> ws y el CallSid codificado: ni el esquema ni la query se rompen.
+    assert '<Stream url="ws://local.dev:8000/api/voice/stream?CallSid=CA%2B1%2F2"/>' in twiml
+
+
+async def test_resolve_media_stream_call_returns_tenant_and_customer(
+    db_session, restaurant_factory
+):
+    restaurant = await restaurant_factory(active=True, voice_number=VOICE_NUMBER)
+    await process_voice_call(
+        db_session, request=_call(), llm=FakeLLMClient(), gateway=FakeWhatsAppGateway()
+    )
+
+    resolved, customer_id = await resolve_media_stream_call(db_session, call_sid=DEFAULT_SID)
+    assert resolved.id == restaurant.id
+    # El webhook ya normalizó el `From` en customers: el stream no repite el alta.
+    assert customer_id is not None
+
+
+async def test_resolve_media_stream_call_unknown_sid(db_session):
+    assert await resolve_media_stream_call(db_session, call_sid="CA-DESCONOCIDA") is None
 
 
 async def test_first_silence_reprompts(db_session, restaurant_factory):

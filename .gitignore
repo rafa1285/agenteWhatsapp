@@ -62,3 +62,6 @@ logs/
 *.rdb
 *.sqlite3
 data/
+# Qdrant embebido y caché de modelos ONNX (los genera el backend en dev)
+storage/qdrant/
+storage/models/

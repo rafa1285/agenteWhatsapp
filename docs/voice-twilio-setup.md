@@ -1,102 +1,91 @@
 # Configuración de Twilio para el canal de voz
 
 Guía operativa para recibir llamadas reales y crear reservas por voz
-con el backend ya implementado en `app/channels/voice/`.
+con el backend implementado en `app/channels/voice/`.
 
 ## Requisitos
 
-- Backend FastAPI en marcha (`uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`).
+- Backend FastAPI en marcha.
 - PostgreSQL con al menos un restaurante activo y `voice_number` en E.164.
 - Cuenta Twilio con un número con capacidad **Voice**.
-- URL pública HTTPS (ngrok, cloudflared o dominio de staging/producción).
-- WhatsApp configurado si quieres la confirmación escrita tras la reserva.
+- URL pública HTTPS (ngrok, cloudflared o dominio).
+- WhatsApp configurado para confirmaciones escritas.
 
-## Variables de entorno
-
-En `.env` (nunca en git):
+## Variables de Entorno (`.env`)
 
 ```dotenv
 VOICE_BASE_URL=https://tu-tunel-o-dominio.example
 TWILIO_ACCOUNT_SID=ACxxxxxxxx
 TWILIO_AUTH_TOKEN=tu_auth_token
 TWILIO_VALIDATE_SIGNATURE=true
+
+# Voz en tiempo real (Media Streams). La URL del WebSocket NO se configura:
+# se deriva de VOICE_BASE_URL (https -> wss) y lleva el CallSid.
+USE_MEDIA_STREAMS=false      # Cambiar a true para usar Deepgram/ElevenLabs
+DEEPGRAM_API_KEY=tu_key
+ELEVENLABS_API_KEY=tu_key
+VOICE_STT_MODEL=nova-3
+VOICE_STT_LANGUAGE=es
+VOICE_STT_END_OF_TURN_MS=700  # silencio que cierra el turno del hablante
+VOICE_TTS_MODEL=eleven_flash_v2_5
+VOICE_TTS_VOICE_ID=EXAVITQu4vr4xnSDxMaL
 ```
 
-Notas:
+## Modos de Operación
 
-- `VOICE_BASE_URL` debe ser exactamente la URL pública que Twilio usa
-  (sin barra final). El backend la usa para firmar/validar y para los
-  `action` de `<Gather>` / `<Dial>`.
-- `TWILIO_AUTH_TOKEN` habilita la validación de `X-Twilio-Signature` en
-  `POST /api/voice/call` y `POST /api/voice/status`.
-- En tests el flag `TESTING=true` desactiva la validación de firma.
+El backend soporta dos modos de interacción de voz:
 
-## Endpoints del backend
+### 1. Flujo Estándar (TwiML por turnos)
+Es el modo por defecto (`USE_MEDIA_STREAMS=false`). Twilio gestiona el STT y el
+TTS nativamente y cada turno es un POST al Voice URL.
+- **Voice URL**: `POST {VOICE_BASE_URL}/api/voice/call`
+- **Status Callback**: `POST {VOICE_BASE_URL}/api/voice/status`
+- **Ventajas**: Configuración simple, alta estabilidad, y es el único modo que
+  hace transferencia en vivo (`<Dial>`).
+- **Coste**: voz robótica de `<Say>` y un silencio de varios segundos por turno
+  (Twilio cierra el speech, hace el POST, espera al LLM y sintetiza).
 
-| Uso Twilio | Método | URL |
-|---|---|---|
-| A call comes in (Voice URL) | `POST` | `{VOICE_BASE_URL}/api/voice/call` |
-| Call status changes | `POST` | `{VOICE_BASE_URL}/api/voice/status` |
+### 2. Flujo en tiempo real (Media Streams)
+Con `USE_MEDIA_STREAMS=true` el saludo responde con
+`<Connect><Stream url="wss://.../api/voice/stream?CallSid=..."/></Connect>`.
+Todo lo demás pasa por el WebSocket:
+
+- **Stack**: audio μ-law 8 kHz de Twilio → Deepgram (STT streaming) → turno
+  cerrado → orquestador en streaming (`run_conversation_stream`) → frases →
+  ElevenLabs `flash` en μ-law 8 kHz → Twilio.
+- Se habla frase a frase mientras el modelo todavía escribe, y el barge-in
+  (`SpeechStarted` de Deepgram) manda `clear` a Twilio para cortar el audio.
+- El `<Say>` que va detrás del `<Connect>` solo suena si el WebSocket cae: es el
+  respaldo para que el cliente no se quede en silencio.
+- **Identidad**: el WebSocket resuelve tenant y cliente en `voice_calls` por su
+  `CallSid` (lo creó el primer POST). No se pasa el `restaurant_id` por la URL.
+- **Limitación**: dentro de un Media Stream Twilio no ejecuta TwiML nuevo, así
+  que la transferencia en vivo no está disponible en este modo. La escalación
+  deja su fila en `escalations` para que actúe el panel.
+- **Latencia**: se registran en el log el primer byte de TTS, la primera frase
+  tras el turno y el primer audio del turno, en ms.
 
 ## Pasos en Twilio Console
 
-1. Compra o elige un número con Voice.
-2. En el número → **Voice & Fax**:
+1. **Configuración del Número**:
    - **A call comes in** → Webhook → `POST {VOICE_BASE_URL}/api/voice/call`
    - **Call status changes** → Webhook → `POST {VOICE_BASE_URL}/api/voice/status`
-3. (Opcional) Activa grabación de llamadas en la consola del número para
-   que el status callback traiga `RecordingUrl` (el saludo ya avisa de
-   grabación por RGPD).
-4. Si usas cuenta trial: verifica el móvil desde el que vas a llamar.
+2. **Vincular al Restaurante**: `Restaurant.voice_number` debe coincidir con el número de Twilio en formato E.164.
 
-## Vincular el número al restaurante
+## Checklist de Prueba
 
-`Restaurant.voice_number` debe coincidir **exactamente** con el `To`
-que envía Twilio (E.164), por ejemplo `+34911234567`.
-
-Ejemplo SQL:
-
-```sql
-UPDATE restaurants
-SET voice_number = '+34911234567',
-    active = true
-WHERE id = '<restaurant-id>';
-```
-
-## Desarrollo local con túnel
-
-```bash
-# terminal 1
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# terminal 2
-ngrok http 8000
-```
-
-Copia la URL HTTPS de ngrok a `VOICE_BASE_URL`, reinicia uvicorn si
-hace falta y actualiza los webhooks del número en Twilio.
-
-## Checklist de prueba
-
-1. Llamas al número Twilio.
-2. Oyes el saludo + aviso de grabación.
-3. Hablas (p. ej. “Quiero reservar para dos mañana a las dos”).
-4. El backend crea `voice_calls` y, si procede, `reservations` con
-   `source_channel = voice`.
-5. Tras confirmar, cuelga y envía confirmación por WhatsApp al `From`.
-6. El status callback marca la llamada como `completed` y, si hay
-   grabación, rellena `recording_url`.
+1. Llamas al número Twilio (`python test_call.py` desde otro terminal).
+2. Oyes el saludo + aviso de grabación (RGPD). En modo stream lo dice ElevenLabs.
+3. Hablas → el backend resuelve el turno y responde. En modo stream no hay
+   POST por turno: todo va por el WebSocket.
+4. Interrumpe al agente a mitad de frase → debe callar enseguida (barge-in).
+5. Confirmas reserva → se envía la confirmación por WhatsApp y se cuelga.
+6. Status Callback → la llamada queda como `completed` en `voice_calls`.
 
 ## Seguridad
 
-- Con `TWILIO_AUTH_TOKEN` configurado, las peticiones sin firma válida
-  no procesan la llamada: `/call` responde TwiML de cortesía y `/status`
-  es no-op (HTTP 200 para no provocar reintentos).
-- No commitees el Auth Token. Usa solo `.env` local o secretos del entorno.
+- La validación de `X-Twilio-Signature` es obligatoria en `/call` y `/status` mediante `TWILIO_AUTH_TOKEN`.
+- El endpoint `/stream` (WebSocket) no valida la firma: Twilio no firma el
+  handshake. Solo acepta CallSid existentes en `voice_calls`, así que una
+  conexión ajena se cierra con 4004 sin tocar datos de otro tenant.
 
-## Fuera de esta guía
-
-- Integración ElevenLabs (STT/TTS externo).
-- Control fino de grabación vía TwiML `<Record>`.
-- Números Twilio distintos por restaurante (hoy se asume una cuenta
-  Twilio compartida y un `voice_number` por tenant).

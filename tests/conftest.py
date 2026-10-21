@@ -41,8 +41,15 @@ from sqlalchemy.pool import NullPool
 
 @pytest.fixture(scope="session", autouse=True)
 def enable_testing_mode():
-    """Habilita TESTING=True para toda la session de tests (deshabilita webhooks)."""
+    """Habilita TESTING=True para toda la session de tests (deshabilita webhooks).
+
+    `USE_MEDIA_STREAMS` se fija en False aunque el `.env` local lo tenga en True:
+    el modo de voz (turnos `<Say>`/`<Gather>` o stream en tiempo real) cambia el
+    TwiML del saludo, y los tests no pueden depender de una bandera de desarrollo.
+    Los tests que quieren el otro modo la levantan con `monkeypatch.setattr`.
+    """
     settings.TESTING = True
+    settings.USE_MEDIA_STREAMS = False
     get_settings.cache_clear()
     yield
     settings.TESTING = False

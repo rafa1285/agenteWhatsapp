@@ -74,24 +74,44 @@ class Settings(BaseSettings):
     PANEL_WEBHOOK_SECRET: str = ""
 
     # Knowledge Base (Qdrant + Embeddings).
-    # QDRANT_URL suele ser http://localhost:6333 en dev.
+    # Dos modos excluyentes: con `QDRANT_PATH` no vacio Qdrant corre embebido en
+    # el proceso (ficheros locales; solo desarrollo / un unico worker). Si no, se
+    # conecta al servidor de `QDRANT_URL` (`http://localhost:6333` en dev).
     QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_PATH: str = ""
     QDRANT_API_KEY: str | None = None
-    # Usamos OpenAI para embeddings por defecto (text-embedding-3-small).
-    OPENAI_API_KEY: str | None = None
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # FastEmbed: modelo ONNX local, sin API keys ni coste. Debe ser multilingue
+    # porque las preguntas llegan en espanol. `EMBEDDING_DIM` tiene que coincidir
+    # con la dimension del modelo y con la coleccion creada en Qdrant.
+    EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    EMBEDDING_DIM: int = 384
+    EMBEDDING_CACHE_DIR: str = "storage/models"
+    # Score de similitud minima para aceptar una FAQ recuperada por RAG. Con
+    # parrafos lejanos ("¿a qué hora abren?" vs "abre de 13:00 a 23:00") este
+    # modelo ronda 0.6; por debajo del umbral se deriva a un humano.
+    FAQ_RAG_SCORE_THRESHOLD: float = 0.45
 
-    # Deepgram (STT en tiempo real).
+    # Deepgram (STT en tiempo real del Media Stream). El audio de Twilio llega en
+    # μ-law 8 kHz, formato que fija el `encoding`/`sample_rate` de la conexión.
     DEEPGRAM_API_KEY: str | None = None
+    VOICE_STT_MODEL: str = "nova-3"
+    VOICE_STT_LANGUAGE: str = "es"
+    # Con `dictation` Deepgram devuelve frases finales por separado y no acepta
+    # `utterance_end_ms` en este modelo, así que el fin de turno se decide aquí:
+    # si transcurre este silencio (ms) sin nuevas frases, el turno se da por
+    # cerrado. Bajo = respuestas ágiles pero corta las frases pausadas.
+    VOICE_STT_END_OF_TURN_MS: int = 700
 
-    # ElevenLabs (TTS en tiempo real).
+    # ElevenLabs (TTS en tiempo real). `flash` es la familia de baja latencia para
+    # teléfono; `multilingual_v2` suena mejor pero tarda demasiado en responder.
     ELEVENLABS_API_KEY: str | None = None
+    VOICE_TTS_MODEL: str = "eleven_flash_v2_5"
+    VOICE_TTS_VOICE_ID: str = "EXAVITQu4vr4xnSDxMaL"
 
-    # Voice streaming configuration
-    USE_MEDIA_STREAMS: bool = (
-        False  # Set to True to enable Twilio Media Streams + Deepgram/ElevenLabs
-    )
-    MEDIA_STREAMS_URL: str = "wss://example.com/api/voice/stream"  # WebSocket URL for media streams
+    # Voz en tiempo real: `<Connect><Stream>` en vez de `<Say>`/`<Gather>` por
+    # turnos. La URL del WebSocket se deriva de `VOICE_BASE_URL` (https -> wss) y
+    # no se configura aparte, para que túnel y dominio sean una sola verdad.
+    USE_MEDIA_STREAMS: bool = False
 
     # Testing flag para deshabilitar webhooks y otras integraciones externas en tests
     TESTING: bool = False

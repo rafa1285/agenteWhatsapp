@@ -18,6 +18,7 @@ Caller ID (§10.7), fallo técnico conservando lo capturado (§10.8).
 import logging
 import uuid
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -30,7 +31,7 @@ from app.agent.service import latest_conversation_transcript
 from app.channels.voice.models import VoiceCall, VoiceCallStatus
 from app.channels.voice.schemas import TwilioCallRequest
 from app.channels.voice.service import is_within_transfer_hours
-from app.channels.voice.twiml import build_response, dial, gather, hangup, say
+from app.channels.voice.twiml import build_response, connect_stream, dial, gather, hangup, say
 from app.channels.whatsapp.gateway import WhatsAppGateway, WhatsAppSendError
 from app.core.models import Restaurant
 from app.core.service import get_restaurant_by_voice_number, mask_phone
@@ -56,7 +57,7 @@ TECHNICAL_FAILURE_TEXT = "Estamos teniendo un problema técnico. Disculpe."
 _TERMINAL_CALL_STATUSES = frozenset({"completed", "busy", "failed", "no-answer", "canceled"})
 
 
-def _greeting_text(restaurant_name: str) -> str:
+def greeting_text(restaurant_name: str) -> str:
     """Saludo de bienvenida con el aviso de grabación (RGPD, transversal de voz)."""
     return (
         f"Bienvenido a {restaurant_name}. Esta llamada puede ser grabada con fines "
@@ -67,6 +68,33 @@ def _greeting_text(restaurant_name: str) -> str:
 def _call_action_url() -> str:
     """URL absoluta a la que Twilio devuelve cada turno (Gather/Dial action)."""
     return f"{settings.VOICE_BASE_URL}/api/voice/call"
+
+
+def _media_stream_url(call_sid: str) -> str:
+    """URL del WebSocket de medios, derivada de `VOICE_BASE_URL`.
+
+    Un solo origen de verdad para túnel/dominio: https -> wss y http -> ws. El
+    `CallSid` va en la query para que el stream resuelva tenant y cliente desde
+    `voice_calls`, sin repetir identificadores por la red.
+    """
+    base = settings.VOICE_BASE_URL.strip()
+    if base.startswith("https://"):
+        base = "wss://" + base.removeprefix("https://")
+    elif base.startswith("http://"):
+        base = "ws://" + base.removeprefix("http://")
+    return f"{base.rstrip('/')}/api/voice/stream?CallSid={quote(call_sid, safe='')}"
+
+
+def _media_stream_twiml(call_sid: str) -> str:
+    """TwiML de un Media Stream: `<Connect><Stream>` y `<Say>` de respaldo.
+
+    El `<Say>` posterior solo suena si el WebSocket cae: mientras el stream vive,
+    habla ElevenLabs. Sin él, un fallo del stream dejaría al cliente en silencio.
+    """
+    return build_response(
+        connect_stream(_media_stream_url(call_sid)),
+        say("Se ha cortado la línea. Vuelve a llamar, por favor. Adiós."),
+    )
 
 
 def _gather_turn() -> str:
@@ -143,18 +171,18 @@ async def process_voice_call(
     """
     if not request.call_sid:
         logger.info("webhook de voz sin CallSid: cortesía")
-        return build_response(say(f"Debug: falta CallSid. Recibido: {request.call_sid}"), hangup())
+        return _courtesy()
 
     if request.dial_call_status:
         return await _handle_dial_completion(session, request=request)
 
     if not request.to:
         logger.info("webhook de voz sin número destino: cortesía")
-        return build_response(say(f"Debug: falta To. Recibido: {request.to}"), hangup())
+        return _courtesy()
     restaurant = await get_restaurant_by_voice_number(session, voice_number=request.to)
     if restaurant is None:
         logger.info("llamada a número desconocido/inactivo (%s): cortesía", request.to)
-        return build_response(say(f"Debug: Restaurante no encontrado para {request.to}"), hangup())
+        return _courtesy()
     # Capturado antes de cualquier rollback por carrera (expiraría el objeto y
     # acceder a sus atributos haría un lazy-load síncrono -> MissingGreenlet).
     restaurant_id = restaurant.id
@@ -187,15 +215,20 @@ async def process_voice_call(
 
     if newly_created:
         # Saludo + aviso RGPD + primer Gather. El commit deja la fila visible a
-        # los turnos siguientes (cada turno es un request HTTP distinto).
+        # los turnos siguientes (cada turno es un request HTTP distinto) y al
+        # WebSocket de medios, que resuelve la llamada por CallSid.
         try:
             await session.commit()
         except IntegrityError:
             # Carrera: otro request creó la llamada justo antes del commit.
             await session.rollback()
             return _re_prompt(settings.VOICE_SILENCE_HANGUP_SECONDS)
+        if settings.USE_MEDIA_STREAMS:
+            # Voz en tiempo real: Twilio abre el Media Stream y el audio entra por
+            # el WebSocket. El saludo lo pone ElevenLabs desde el stream, no <Say>.
+            return _media_stream_twiml(request.call_sid)
         return build_response(
-            say(_greeting_text(restaurant.name)),
+            say(greeting_text(restaurant.name)),
             gather(
                 say("Hable"),
                 action=_call_action_url(),
@@ -329,6 +362,25 @@ async def _handle_dial_completion(session: AsyncSession, *, request: TwilioCallR
     voice_call.completed_at = datetime.now(UTC)
     await session.commit()
     return build_response(say(TRANSFER_FAILED_TEXT), hangup())
+
+
+async def resolve_media_stream_call(
+    session: AsyncSession, *, call_sid: str
+) -> tuple[Restaurant, uuid.UUID | None] | None:
+    """Resuelve tenant y cliente de un Media Stream a partir de su `CallSid`.
+
+    La fila `voice_calls` la creó el primer POST del webhook, que además ya
+    normalizó el número llamante en `customers`: el WebSocket no vuelve a
+    resolver por teléfono ni inventa un tenant (una llamada de un número
+    desconocido simplemente no llega aquí).
+    """
+    voice_call = await session.scalar(select(VoiceCall).where(VoiceCall.call_sid == call_sid))
+    if voice_call is None:
+        return None
+    restaurant = await session.get(Restaurant, voice_call.restaurant_id)
+    if restaurant is None:
+        return None
+    return restaurant, voice_call.customer_id
 
 
 async def process_voice_status(session: AsyncSession, *, request: TwilioCallRequest) -> None:

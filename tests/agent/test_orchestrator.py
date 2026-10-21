@@ -14,6 +14,7 @@ from app.agent.orchestrator import (
     TECHNICAL_FAILURE_TEXT,
     build_system_prompt,
     run_conversation,
+    run_conversation_stream,
 )
 from app.core.models import Restaurant
 from app.modules.reservations.models import Reservation, SourceChannel
@@ -27,6 +28,14 @@ class _RaisingClient:
 
     async def generate(self, **kwargs):
         raise RuntimeError("llm down")
+
+
+class _RaisingStreamClient:
+    """Fallo del LLM en la variante en streaming."""
+
+    async def generate_stream(self, **kwargs):
+        raise RuntimeError("llm down")
+        yield  # nunca se alcanza: mantiene la función como async generator
 
 
 def test_build_system_prompt_uses_tone_and_channel() -> None:
@@ -356,3 +365,80 @@ async def test_unknown_tool_is_error(db_session, restaurant_factory):
     block = tool_user["content"][0]
     assert block["type"] == "tool_result"
     assert block["is_error"] is True
+
+
+async def _collect_stream(session, *, llm, restaurant, incoming_message, **kwargs):
+    """Devuelve (deltas, [ConversationResult...]) consumiendo el stream completo."""
+    deltas: list[str] = []
+    results: list = []
+    async for delta, result in run_conversation_stream(
+        session,
+        llm=llm,
+        restaurant=restaurant,
+        source_channel=SourceChannel.VOICE,
+        incoming_message=incoming_message,
+        **kwargs,
+    ):
+        if delta:
+            deltas.append(delta)
+        if result is not None:
+            results.append(result)
+    return deltas, results
+
+
+async def test_stream_emits_deltas_and_one_final_result(db_session, restaurant_factory):
+    restaurant = await restaurant_factory()
+    fake = FakeLLMClient([LLMResponse(text="Abrimos de trece a veintitrés.")])
+    deltas, results = await _collect_stream(
+        db_session, llm=fake, restaurant=restaurant, incoming_message="¿A qué hora abrís?"
+    )
+    assert "".join(deltas).strip() == "Abrimos de trece a veintitrés."
+    assert len(results) == 1
+    result = results[0]
+    assert result.text == "Abrimos de trece a veintitrés."
+    assert result.outcome == ConversationOutcome.QUERY
+    # El transcript persistido es el texto limpio, no los deltas troceados.
+    conversation = await db_session.get(Conversation, result.conversation_id)
+    assert conversation.transcript.count("Abrimos") == 1
+
+
+async def test_stream_runs_tools_and_keeps_the_loop(db_session, availability_setup):
+    restaurant, _tables = await availability_setup()
+    fake = FakeLLMClient(
+        [
+            LLMResponse(
+                text="Déjame comprobarlo.",
+                tool_calls=(
+                    ToolCall(
+                        id="toolu_01",
+                        name="check_availability",
+                        input={"date": SERVICE_DATE.isoformat(), "time": "14:00", "party_size": 2},
+                    ),
+                ),
+            ),
+            LLMResponse(text="Sí, hay mesa a las 14:00."),
+        ]
+    )
+    deltas, results = await _collect_stream(
+        db_session, llm=fake, restaurant=restaurant, incoming_message="¿Hueco para dos?"
+    )
+    assert len(results) == 1
+    assert results[0].tool_calls == 1
+    assert results[0].text == "Sí, hay mesa a las 14:00."
+    # El preámbulo de la ronda con tools también se emite (actividad en voz alta).
+    assert "Déjame" in "".join(deltas)
+    second = fake.calls[1]["messages"]
+    tool_user = next(m for m in second if m["role"] == "user" and isinstance(m["content"], list))
+    assert json.loads(tool_user["content"][0]["content"])["available"] is True
+
+
+async def test_stream_technical_failure_escalates_once(db_session, restaurant_factory):
+    restaurant = await restaurant_factory()
+    deltas, results = await _collect_stream(
+        db_session, llm=_RaisingStreamClient(), restaurant=restaurant, incoming_message="Hola"
+    )
+    assert deltas == []
+    assert len(results) == 1
+    assert results[0].text == TECHNICAL_FAILURE_TEXT
+    assert results[0].outcome == ConversationOutcome.ESCALATED
+    assert results[0].escalation_id is not None

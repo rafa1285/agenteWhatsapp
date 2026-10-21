@@ -122,3 +122,155 @@ async def test_fake_client_returns_scripted_responses():
     empty = await fake.generate(system="s", messages=[])
     assert empty.text is None
     assert empty.stop_reason == "end_turn"
+
+
+async def test_fake_client_streams_scripted_text():
+    fake = FakeLLMClient([LLMResponse(text="hola qué tal")])
+    chunks = [
+        chunk
+        async for chunk in fake.generate_stream(system="s", messages=[{"role": "user", "content": "h"}])
+    ]
+    assert "".join(c.text for c in chunks if c.text).strip() == "hola qué tal"
+    assert chunks[-1].response is not None
+    assert chunks[-1].response.text == "hola qué tal"
+
+
+def _sse(events: list[tuple[str, dict]]) -> bytes:
+    """Serializa eventos como lo hace el Messages API con `stream=true`."""
+    return b"".join(f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode() for name, payload in events)
+
+
+def _stream_body(*, text_deltas: list[str], tool: dict | None = None) -> bytes:
+    """Fluye un text block (con deltas) y, si toca, un tool_use con su JSON parcial."""
+    events: list[tuple[str, dict]] = [
+        (
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-haiku-4-5-20251001",
+                    "stop_reason": None,
+                    "usage": {"input_tokens": 10, "output_tokens": 1},
+                },
+            },
+        ),
+        ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ("ping", {"type": "ping", "delta": {"type": "ping_delta"}}),
+    ]
+    for delta in text_deltas:
+        events.append(
+            (
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": delta},
+                },
+            )
+        )
+    events.append(("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    if tool is not None:
+        events.append(
+            (
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": tool["id"],
+                        "name": tool["name"],
+                        "input": {},
+                    },
+                },
+            )
+        )
+        for partial in tool["partial_json"]:
+            events.append(
+                (
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 1,
+                        "delta": {"type": "input_json_delta", "partial_json": partial},
+                    },
+                )
+            )
+        events.append(("content_block_stop", {"type": "content_block_stop", "index": 1}))
+    events += [
+        (
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": tool and "tool_use" or "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 5},
+            },
+        ),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    return _sse(events)
+
+
+@pytest_asyncio.fixture
+async def make_streaming_client():
+    """`ClaudeClient` cuyo `stream=true` responde con SSE fijos."""
+
+    http_clients: list[httpx.AsyncClient] = []
+
+    def _make(body: bytes):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, content=body, headers={"content-type": "text/event-stream"}
+            )
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        http_clients.append(http)
+        return ClaudeClient(api_key="test-key", http_client=http)
+
+    yield _make
+
+    for http in http_clients:
+        await http.aclose()
+
+
+async def test_generate_stream_emits_text_deltas_and_final_response(make_streaming_client):
+    client = make_streaming_client(_stream_body(text_deltas=["Hola", " qué ", "tal"]))
+    chunks = [
+        chunk async for chunk in client.generate_stream(system="s", messages=[{"role": "user", "content": "x"}])
+    ]
+    assert [c.text for c in chunks if c.text] == ["Hola", " qué ", "tal"]
+    final = chunks[-1].response
+    assert final is not None
+    assert final.text == "Hola qué tal"
+    assert final.stop_reason == "end_turn"
+    assert final.tool_calls == ()
+
+
+async def test_generate_stream_rebuilds_tool_use_from_json_deltas(make_streaming_client):
+    client = make_streaming_client(
+        _stream_body(
+            text_deltas=["Voy a consultar."],
+            tool={
+                "id": "toolu_01",
+                "name": "check_availability",
+                "partial_json": [
+                    '{"date": "2026-09-15"',
+                    ', "time": "14:00"',
+                    ', "party_size": 2}',
+                ],
+            },
+        )
+    )
+    chunks = [
+        chunk async for chunk in client.generate_stream(system="s", messages=[{"role": "user", "content": "x"}])
+    ]
+    final = chunks[-1].response
+    assert final is not None
+    assert final.stop_reason == "tool_use"
+    call = final.tool_calls[0]
+    assert call.id == "toolu_01"
+    assert call.input == {"date": "2026-09-15", "time": "14:00", "party_size": 2}

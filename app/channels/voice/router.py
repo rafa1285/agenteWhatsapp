@@ -12,7 +12,7 @@ para STT con Deepgram y TTS con ElevenLabs.
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response, WebSocket
+from fastapi import APIRouter, Depends, Request, Response, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.client import LLMClient
@@ -26,11 +26,13 @@ from app.channels.voice.handler import (
     TECHNICAL_FAILURE_TEXT,
     process_voice_call,
     process_voice_status,
+    resolve_media_stream_call,
 )
 from app.channels.voice.schemas import TwilioCallRequest
+from app.channels.voice.stream_handler import VoiceStreamHandler
 from app.channels.voice.twiml import build_response, hangup, say
 from app.channels.whatsapp.gateway import WhatsAppGateway
-from app.db.session import get_db_session
+from app.db.session import async_session_factory, get_db_session
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
@@ -70,6 +72,8 @@ async def receive_call(
     except Exception:
         logger.exception("fallo no controlado en el webhook de voz")
         twiml = build_response(say(TECHNICAL_FAILURE_TEXT), hangup())
+    # Sin esta línea no hay forma de saber qué ejecutó Twilio cuando algo falla.
+    logger.info("TwiML devuelto (CallSid=%s): %s", payload.call_sid, twiml)
     return Response(content=twiml, media_type="application/xml")
 
 
@@ -80,6 +84,16 @@ async def receive_status(
 ) -> Response:
     """Status callback de Twilio: persiste el estado terminal de la llamada."""
     form = await request.form()
+    # Twilio explica aquí por qué abortó un verbo (p. ej. 31920 = el Media Stream
+    # no hizo handshake). Se registra antes de validar la firma: un fallo de firma
+    # también es información.
+    logger.info(
+        "STATUS CALLBACK - %s: code=%s msg=%s (CallSid=%s)",
+        form.get("CallStatus"),
+        form.get("CallErrorCode"),
+        form.get("CallStatusMessage"),
+        form.get("CallSid"),
+    )
     if not validate_twilio_signature(request, form_data=form):
         logger.warning("firma Twilio inválida en /api/voice/status")
         return Response(status_code=200)
@@ -91,78 +105,46 @@ async def receive_status(
 @router.websocket("/stream")
 async def media_stream(
     websocket: WebSocket,
-    session: Annotated[AsyncSession, Depends(get_db_session)],
     llm: Annotated[LLMClient, Depends(get_llm_client)],
     gateway: Annotated[WhatsAppGateway, Depends(get_whatsapp_gateway)],
-):
-    """
-    WebSocket de medios para Twilio: maneja el flujo de audio bidireccional.
-    Recibe audio del cliente, lo envía a Deepgram para STT,
-    procesa con el LLM, convierte respuesta a audio con ElevenLabs,
-    y envía el audio de vuelta a Twilio.
-    """
-    await websocket.accept()
-    logger.info("WebSocket de medios conectado")
+) -> None:
+    """Media Stream de Twilio: audio en tiempo real con Deepgram y ElevenLabs.
 
-    # Extraer información de la llamada de los query parameters o headers
-    # En una implementación real, esto vendría del mensaje de start de Twilio
+    Solo llega aquí si `USE_MEDIA_STREAMS=true`, porque el TwiML del saludo es el
+    que abre el `<Connect>`. La identidad (tenant y cliente) no se pasa por la
+    URL: se resuelve desde `voice_calls` con el `CallSid`, que ya creó el webhook.
+    """
+    # cloudflared no reenvía el 101 a Twilio a menos que declare que el cuerpo no
+    # está codificado: sin esta cabecera Twilio no abre el Media Stream y ejecuta el
+    # `<Say>` de respaldo (issue 1465 de cloudflared; ngrok no lo necesita).
+    await websocket.accept(headers=[(b"content-encoding", b"identity")])
     call_sid = websocket.query_params.get("CallSid")
     if not call_sid:
-        # Intentar obtenerlo de los headers
-        call_sid = websocket.headers.get("twilio-call-sid")
+        logger.warning("Media Stream sin CallSid: se cierra el WebSocket")
+        await websocket.close(code=4000)
+        return
 
-    # Para ahora, vamos a simplificar y asumir que podemos obtener el restaurante
-    # de alguna manera. En producción, esto sería más complejo.
-    # Por ahora, vamos a crear un manejador básico que necesitaremos refinar.
+    # Sesión efímera: solo para resolver la llamada. La conversación usará una
+    # sesión por turno, porque un Media Stream dura minutos.
+    async with async_session_factory() as session:
+        identity = await resolve_media_stream_call(session, call_sid=call_sid)
+    if identity is None:
+        logger.warning("Media Stream de una llamada desconocida (CallSid=%s)", call_sid)
+        await websocket.close(code=4004)
+        return
+    restaurant, customer_id = identity
 
+    handler = VoiceStreamHandler(
+        websocket=websocket,
+        session_factory=get_db_session,
+        llm=llm,
+        gateway=gateway,
+        restaurant=restaurant,
+        customer_id=customer_id,
+    )
     try:
-        # Importar el manejador de flujo
-        from app.channels.voice.stream_handler import VoiceStreamHandler
-
-        # Obtener restaurant_id de alguna manera (en producción, vendría de Twilio o de base de datos)
-        # Por ahora, vamos a usar un placeholder - esto necesitará ser refinado
-        restaurant_id = websocket.query_params.get("restaurant_id")
-        if not restaurant_id:
-            logger.warning("No se proporcionó restaurant_id en el WebSocket")
-            await websocket.close(code=4000)
-            return
-
-        # Obtener la sesión de restaurante
-        from sqlalchemy import select
-
-        from app.core.models import Restaurant
-        from app.db.session import get_db_session
-
-        # Esto es simplificado - en producción necesitamos manejar esto mejor
-        async for db_session in get_db_session():
-            stmt = select(Restaurant).where(Restaurant.id == restaurant_id)
-            result = await db_session.execute(stmt)
-            restaurant = result.scalar_one_or_none()
-            if not restaurant:
-                logger.error("Restaurante no encontrado: %s", restaurant_id)
-                await websocket.close(code=4004)
-                return
-            break
-
-        # Obtener customer_id si está disponible
-        customer_id = websocket.query_params.get("customer_id")
-
-        # Crear y ejecutar el manejador de flujo
-        handler = VoiceStreamHandler(
-            websocket=websocket,
-            session_factory=get_db_session,
-            llm_client=llm,
-            whatsapp_gateway=gateway,
-            restaurant=restaurant,
-            customer_id=customer_id,
-        )
         await handler.handle()
-
-    except Exception as e:
-        logger.error("Error en WebSocket de medios: %s", e, exc_info=True)
-        try:
-            await websocket.close(code=4000)
-        except:
-            pass
+    except WebSocketDisconnect:
+        logger.info("Twilio desconectó el Media Stream (CallSid=%s)", call_sid)
     finally:
-        logger.info("WebSocket de medios desconectado")
+        logger.info("Media Stream terminado (CallSid=%s)", call_sid)

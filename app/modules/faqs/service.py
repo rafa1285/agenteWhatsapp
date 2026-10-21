@@ -2,6 +2,7 @@
 Sustituye la clasificación por keywords por búsqueda semántica vectorial.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -9,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.embeddings import embedding_service
 from app.core.models import Restaurant
+from app.core.settings import settings
 from app.core.vector_store import vector_store_service
+
+logger = logging.getLogger(__name__)
 
 UNKNOWN_ANSWER = (
     "No tengo esa información con certeza; te pongo en contacto con el equipo del restaurante."
@@ -53,10 +57,9 @@ async def answer_faq(
             # sistema, devolvemos unknown si no hay matches semánticos.
             return _unknown()
 
-        # 4. Retornar la respuesta más relevante si tiene un score aceptable
-        # (El score depende del modelo, para cosine similarity 0.7-0.8 suele ser bueno)
+        # 4. Retornar la respuesta más relevante si supera el umbral de similitud
         best_match = results[0]
-        if best_match["score"] < 0.7:
+        if best_match["score"] < settings.FAQ_RAG_SCORE_THRESHOLD:
             return _unknown()
 
         return FaqAnswer(
@@ -66,10 +69,7 @@ async def answer_faq(
         )
 
     except Exception as e:
-        # En caso de error técnico con Qdrant u OpenAI, no bloqueamos la conversación,
-        # derivamos a humano.
-        import logging
-
-        logger = logging.getLogger(__name__)
+        # En caso de error técnico con Qdrant o el modelo de embeddings, no
+        # bloqueamos la conversación: derivamos a humano.
         logger.error("Error en RAG de FAQs: %s", e, exc_info=True)
         return _unknown()

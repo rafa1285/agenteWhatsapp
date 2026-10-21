@@ -32,6 +32,8 @@ app/modules/customers/      ...
 app/modules/reminders/      ...
 app/modules/faqs/           ...
 app/agent/                  orquestador del agente LLM + tools (tool-calling)
+app/channels/               adaptadores de transporte (whatsapp, voice)
+app/core/                   servicios transversales (stt, tts, vector_store, embeddings)
 app/db/                     sesión de base de datos (SQLAlchemy)
 tests/                      espejo de la estructura anterior
 ```
@@ -48,7 +50,7 @@ Correspondencia de las tablas de la sección 7 del spec con el código:
 | `reservations` | `app/modules/reservations/` | FKs cruzadas a `table_id` y `customer_id` son normales entre módulos |
 | `reminders` | `app/modules/reminders/` | |
 | `conversations`, `escalations` | `app/agent/` | Metadatos de la conversación con el LLM, no dominio del restaurante |
-| `faqs` | — (sin modelo propio) | RAG sobre datos de `restaurants`; la sección 7 no define tabla `faqs` |
+| `faqs` | — (sin modelo propio) | El RAG usa Qdrant (`app/core/vector_store.py`). Fuente de verdad (tabla Postgres o solo Qdrant): PENDIENTE DE DECISIÓN |
 | `owner_users` | — (NO se modela aquí) | Autenticación del panel, gestionada por Laravel/Eloquent en el otro repositorio |
 | `menu_items`, `preorders` | — (diferido) | Módulo opcional de precomanda, fuera de alcance hasta abordarlo explícitamente |
 
@@ -61,8 +63,19 @@ Correspondencia de las tablas de la sección 7 del spec con el código:
 | Caché / estado de conversación | Redis |
 | LLM | Claude Haiku 4.5 vía tool-calling |
 | WhatsApp | WhatsApp Business API (Meta Cloud API / 360dialog) |
-| Voz | Twilio (TwiML / desvío de llamadas) |
+| Voz (TwiML) | Twilio (STT/TTS nativo de Twilio) |
+| Voz (Stream) | Twilio Media Streams + Deepgram (STT) + ElevenLabs (TTS) |
+| Knowledge Base | Qdrant (Vector Store) + OpenAI (Embeddings) |
 | Recordatorios | Worker programado (Celery + Redis Beat) |
+
+## Decisiones Pendientes
+
+- **Destino del flujo TwiML**: A definir.
+- **Grabación en stream**: A definir.
+- **Streaming de tokens (run_conversation_stream)**: A definir.
+- **Proveedor y dimensión de embeddings**: A definir.
+- **Transferencia en vivo desde el stream**: A definir.
+- **Fuente de verdad de las FAQs**: PENDIENTE DE DECISIÓN (Postgres o Qdrant).
 
 ## Convenciones
 
@@ -104,17 +117,19 @@ Correspondencia de las tablas de la sección 7 del spec con el código:
 
 ## Estado / roadmap
 
-Fase actual: Implementación avanzada del backend. La arquitectura de monolito modular está completa, con todos los módulos de dominio implementados y el orquestador del agente funcional.
+Fase actual: Implementación avanzada del backend. El estado detallado se describe en la siguiente tabla.
 
-Progreso real:
-1. Modelos SQLAlchemy: Implementados (8 tablas base + `voice_calls` y `webhook_messages`).
-2. Motor de reservas: Implementado (servicios puros en `app/modules/reservations/service.py`).
-3. Cliente LLM: Implementado (Claude Haiku 4.5 vía tool-calling).
-4. Tools para tool-calling: Implementadas en cada módulo.
-5. Orquestador de conversación: Implementado (`app/agent/orchestrator.py`).
-6. Webhook de WhatsApp: Implementado (compatible con Meta Cloud API y 360dialog).
-7. Canal de voz: Implementado (Twilio TwiML + STT/TTS).
-8. Worker de recordatorios: Implementado (Celery + Redis Beat).
-9. Auth JWT: Implementado (RS256 panel → backend).
-10. Tests: Cobertura amplia en unitarios, servicios y canales.
-
+| Componente | Estado | Evidencia | Pendiente |
+|---|---|---|---|
+| Modelos SQLAlchemy | IMPLEMENTADO | tablas base + `voice_calls` y `webhook_messages` | - |
+| Motor de reservas | IMPLEMENTADO | `app/modules/reservations/service.py` | - |
+| Cliente LLM | IMPLEMENTADO | `app/agent/client.py` | - |
+| Tools tool-calling | IMPLEMENTADO | `**/tools.py` en cada módulo | - |
+| Orquestador | IMPLEMENTADO | `app/agent/orchestrator.py` | - |
+| Webhook WhatsApp | IMPLEMENTADO | `app/channels/whatsapp/` | - |
+| Voz (TwiML) | IMPLEMENTADO | `app/channels/voice/handler.py` | - |
+| Voz (Stream) | PARCIAL | `app/channels/voice/stream_handler.py` | **Pendientes:**<br>• `run_conversation_stream` no implementada<br>• Grabación de llamadas<br>• Transferencia en vivo<br>• Gestión de silencios/baja confianza<br>• Validación de `X-Twilio-Signature` en `/stream`<br>• Variables de entorno en `.env.example`<br>• Tests |
+| STT / TTS / Vector Store | IMPLEMENTADO SIN TESTS | `app/core/stt.py`, `tts.py`, `vector_store.py` | Crear suite de tests |
+| Worker Recordatorios | IMPLEMENTADO | `app/celery.py`, `app/modules/reminders/tasks.py` | - |
+| Auth JWT | IMPLEMENTADO | `app/core/security.py` (RS256) | - |
+| Tests Generales | PARCIAL | Tests de agent, channels, core, db y modules (availability, customers, faqs, reminders, reservations); faltan tests específicos para stt, tts, vector_store, embeddings, stream_handler. Los tests de faqs usan Qdrant (RAG). | stt, tts, vector_store, embeddings, stream_handler |

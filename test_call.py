@@ -33,7 +33,9 @@ try:
     call = client.calls.create(
         from_=TWILIO_PHONE_NUMBER,
         to=MY_PHONE_NUMBER,
-        url=webhook_url
+        url=webhook_url,
+        status_callback=f"{base_url}/api/voice/status",
+        status_callback_event='completed,failed',
     )
     print(f"¡Llamada iniciada con éxito! SID: {call.sid}")
     print("Deberías recibir la llamada en unos segundos.")

@@ -28,6 +28,13 @@ dependencies = [
     "celery[redis]",
     # LLM
     "anthropic",
+    # Embeddings locales para la base de conocimientos (FAQs/RAG): ONNX en CPU,
+    # sin API keys. Anthropic no expone endpoint de embeddings.
+    "fastembed",
+    # Base de conocimientos vectorial
+    "qdrant-client",
+    # STT en tiempo real del canal de voz
+    "deepgram-sdk",
     # Cliente HTTP (webhooks, llamadas salientes)
     "httpx",
     # Variables de entorno

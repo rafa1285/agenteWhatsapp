@@ -9,6 +9,7 @@ No construye el bucle de tool-calling: eso es responsabilidad del orquestador
 normalizada (texto + bloques `tool_use`).
 """
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -37,12 +38,15 @@ class LLMResponse:
 
 
 @dataclass(frozen=True)
-class LLMStreamResponse:
-    """Respuesta en streaming del LLM."""
+class LLMStreamChunk:
+    """Un paso del streaming: un delta de texto o, al final, la respuesta completa.
+
+    El último chunk lleva `response` con las `tool_calls` ya reconstruidas (el SDK
+    acumula los `input_json_delta`), así que el orquestador no vuelve a parsear.
+    """
 
     text: str | None = None
-    tool_calls: tuple[ToolCall, ...] = ()
-    stop_reason: str | None = None
+    response: LLMResponse | None = None
 
 
 class LLMClient(Protocol):
@@ -66,7 +70,7 @@ class LLMClient(Protocol):
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
-    ) -> AsyncGenerator[LLMStreamResponse, None]: ...
+    ) -> AsyncGenerator[LLMStreamChunk, None]: ...
 
 
 class ClaudeClient:
@@ -121,11 +125,11 @@ class ClaudeClient:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
-    ) -> AsyncGenerator[LLMStreamResponse, None]:
+    ) -> AsyncGenerator[LLMStreamChunk, None]:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens if max_tokens is not None else settings.AGENT_MAX_TOKENS,
-            "temperature": (temperature if temperature is not None else settings.AGENT_TEMPERATURE),
+            "temperature": temperature if temperature is not None else settings.AGENT_TEMPERATURE,
             "system": system,
             "messages": messages,
         }
@@ -133,16 +137,12 @@ class ClaudeClient:
             kwargs["tools"] = tools
 
         async with self._client.messages.stream(**kwargs) as stream:
-            for event in stream:
-                if event.type == "message_start":
-                    yield LLMStreamResponse()
-                elif event.type == "content_block_delta":
-                    if event.delta.type == "text_delta":
-                        yield LLMStreamResponse(text=event.delta.text)
-                    elif event.delta.type == "tool_use_block_delta":
-                        yield LLMStreamResponse(tool_calls=())
-                elif event.type == "message_stop":
-                    yield LLMStreamResponse(stop_reason=event.stop_reason)
+            # Solo se reenvían los deltas de texto: los de `input_json` los acumula
+            # el SDK y se leen de una vez en el mensaje final.
+            async for event in stream:
+                if event.type == "content_block_delta" and event.delta.type == "text_delta":
+                    yield LLMStreamChunk(text=event.delta.text)
+            yield LLMStreamChunk(response=_parse_message(await stream.get_final_message()))
 
 
 def _parse_message(message: Any) -> LLMResponse:
@@ -191,3 +191,25 @@ class FakeLLMClient:
             }
         )
         return self._queue.pop(0) if self._queue else LLMResponse(stop_reason="end_turn")
+
+    async def generate_stream(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> AsyncGenerator[LLMStreamChunk, None]:
+        """Mismo guion que `generate`, con el texto troceado en deltas simulados."""
+        response = await self.generate(
+            system=system,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if response.text:
+            for word in response.text.split(" "):
+                yield LLMStreamChunk(text=f"{word} ")
+        yield LLMStreamChunk(response=response)
